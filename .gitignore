@@ -20,3 +20,7 @@ eval_result/
 __pycache__/
 *.pyc
 .env
+
+# Claude Code
+CLAUDE.md
+.claude/

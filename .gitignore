@@ -1,0 +1,22 @@
+# 모델 파일
+*.rknn
+*.onnx
+*.int8.onnx
+*.pt
+*.pth
+*.bin
+
+# 데이터
+*.wav
+*.mp3
+*.npz
+calibration_data/
+
+# 결과
+eval_result/
+*.csv
+
+# Python
+__pycache__/
+*.pyc
+.env

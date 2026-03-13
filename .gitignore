@@ -22,5 +22,4 @@ __pycache__/
 .env
 
 # Claude Code
-CLAUDE.md
 .claude/

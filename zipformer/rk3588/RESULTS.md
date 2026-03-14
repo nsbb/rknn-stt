@@ -3,12 +3,72 @@
 ## 요약
 
 한국어 Zipformer Streaming Transducer ASR 모델을 RK3588 NPU(RKNN)로 포팅한 결과:
-- **RKNN rmreshape + C API: ~35ms/chunk** (batch sync + prune 적용)
-- RKNN CER 26.25% (ONNX INT8 19.95% 대비 +6.3pp — INT8 양자화 영향)
+- **RKNN 최적 속도: ~27.5ms/chunk** (nocache-static, single core0)
+- **RKNN rmreshape + C API: ~33ms/chunk** (cache 변환 포함)
+- RKNN CER 22.97% (ONNX INT8 19.95% 대비 +3pp — INT8 양자화 영향)
 - `remove_reshape=True` 옵션으로 rknn_run 39.2ms → 30.7ms 달성 (-22%)
 - C API `set_io_mem`으로 rknnlite 대비 16ms 절감
-- **소프트웨어 최적화 한계 도달** — 12가지 방법 시도, 상세: `OPTIMIZATION_LOG.md`
-- 20ms 목표: **NPU 드라이버 업그레이드(0.9.6→최신) 필수** (커널 재빌드)
+- **layer pruning 실험으로 20ms 달성 확인** (8-layer 모델, fine-tuning 필요)
+
+---
+
+## 레이어 프루닝 실험 (2026-03-14)
+
+PyTorch 체크포인트에서 내부 레이어를 줄여 re-export → RKNN INT8 변환.
+
+| 구성 | 레이어 수 | RKNN 속도(med) | RKNN min | 파일 크기 | Weight | ONNX CER |
+|------|----------|---------------|---------|----------|--------|----------|
+| 2,4,3,2,4 (원본) | 15 | 29.45ms | 29.13ms | 79MB | 70.0MB | 22.50% |
+| **2,3,2,2,3** | **12** | **26.68ms** | **26.32ms** | **64MB** | **56.5MB** | 93.75%* |
+| 1,3,2,1,3 | 10 | 23.32ms | 22.99ms | 53MB | 46.0MB | 90.00%* |
+| **1,2,2,1,2** | **8** | **19.86ms** | **19.55ms** | **44MB** | **38.5MB** | 143.75%* |
+
+*CER: fine-tuning 없이 weight pruning만 적용한 결과. **Fine-tuning 필수.**
+
+**핵심 발견:**
+- RKNN 레이어 수는 내부 encoder 레이어 수에 비례 (~322 RKNN layers/encoder layer)
+- RKNN 레이어당 dispatch overhead: ~5.9µs
+- **20ms 목표 달성 가능**: 8-layer(1,2,2,1,2) 아키텍처로 19.86ms 확인
+- **단, fine-tuning 없이는 CER 사용 불가** — 모든 bypass_scale이 0.27~0.80 범위로 모든 레이어가 유의미하게 기여
+
+**프루닝 파이프라인:**
+1. HuggingFace에서 pretrained.pt 다운로드
+2. `/tmp/zipformer_export/export_pruned.py`로 reduced-layer ONNX export
+3. CumSum fix + static 변환
+4. RKNN INT8 빌드
+
+### NPU 멀티코어 테스트
+
+| 코어 설정 | nocache-static 속도 |
+|-----------|-------------------|
+| **core0 only** | **27.57ms (최적)** |
+| core1 only | 28.59ms |
+| core2 only | 39.98ms |
+| core0+1 | 29.47ms |
+| core0+1+2 | 31.41ms |
+
+멀티코어는 이 모델에서 오히려 느림 (순차적 레이어 구조, 동기화 오버헤드).
+
+### ONNX 최적화 시도 결과
+
+| 시도 | 결과 |
+|------|------|
+| onnxsim (5293→2100 노드) | RKNN 속도 변화 없음 (29.36ms) |
+| SVD weight compression (50%) | 정확도 파괴 (cosine 0.83) |
+| op_target CPU offload | 크래시 (exMatMul CPU 미지원) |
+| pass_through=1 | 불안정/느림 (38-6400ms) |
+| optimization_level 1,2,3 | 모두 동일 속도 |
+| Encoder layer 제거 (ONNX surgery) | 캐시 구조 복잡성으로 불가 |
+| enable_flash_attention=True | 동일 속도 (29.29ms) |
+| model_pruning=True | 동일 속도 (29.54ms) |
+| compress_weight=True | 동일 속도 (29.51ms) |
+| quantized_method='layer' | 동일 속도 (29.23ms) |
+| quantized_algorithm='kl_divergence' | 동일 속도 (29.31ms) |
+| w4a16 / w8a16 | RK3588 미지원 |
+| sparse_infer=True | RK3588 미지원 |
+| NPU 주파수 확인 | 이미 최대 1GHz |
+
+**결론: RKNN 컴파일러는 ONNX 노드 수/양자화 방법/SDK 옵션과 무관하게 동일한 내부 그래프(~4832 layers) 생성. 속도 = 레이어 수 × dispatch overhead(~5.9µs). 개선은 모델 아키텍처 변경(레이어 수 감소)으로만 가능.**
 
 ---
 
@@ -35,6 +95,19 @@
 
 ## 성능 벤치마크 (RK3588 보드)
 
+### 모든 RKNN 변환 모델 비교 (set_io_mem, single core0)
+
+| 모델 | med(ms) | min(ms) | 파일 | Weight |
+|------|---------|---------|------|--------|
+| **nocache-static (원본 15L)** | **27.57** | **27.33** | 79MB | 70.0MB |
+| nocache | 29.19 | 29.02 | 79MB | 70.0MB |
+| nocache-opt (onnxsim) | 29.31 | 29.12 | 79MB | 70.0MB |
+| baseline (rmreshape) | 31.80 | 31.54 | 80MB | 70.0MB |
+| rmreshape + onnxsim | 30.91 | 30.72 | 80MB | 70.0MB |
+| **pruned 12L (2,3,2,2,3)** | **26.68** | **26.32** | **64MB** | **56.5MB** |
+| **pruned 10L (1,3,2,1,3)** | **23.32** | **22.99** | **53MB** | **46.0MB** |
+| **pruned 8L (1,2,2,1,2)** | **19.86** | **19.55** | **44MB** | **38.5MB** |
+
 ### Encoder 단위 테스트 (`bench_hybrid_timing.py`)
 
 | 방식 | Encoder/청크 | CER | 비고 |
@@ -47,18 +120,6 @@
 | ONNX INT8 (4-thread) | 35ms | 19.95% | |
 | RKNN Hybrid (순차) | 103ms | 19.95% | RKNN + ONNX 모두 실행 |
 
-**최적화 이력:**
-1. rknnlite inputs_set: 52.7ms
-2. C API set_io_mem + CACHEABLE: 39.2ms (-13.5ms)
-3. `remove_reshape=True`: 30.7ms (rknn_run) → 33ms (cache update 포함) (-6.2ms)
-4. batch sync 최적화: 33ms → **32.7ms** (cache convert 2.2ms → 1.2ms)
-5. 최종: **RKNN 32.7ms < ONNX 35ms** (RKNN이 ONNX를 이김)
-
-**`remove_reshape=True` 효과:**
-- 경계 Reshape/Transpose 제거 → NPU dispatch 오버헤드 -8.5ms
-- perf_detail: Reshape 181ops(8.2ms) + Transpose 202ops(6.7ms) = 14.9ms → 상당수 제거
-- 단점: 입출력 shape 변경 → cache 변환에 reshape+transpose 필요 (~3ms CPU)
-
 ### Joiner 성능 비교
 
 | 방식 | 시간/호출 | 비고 |
@@ -67,19 +128,14 @@
 | ONNX INT8 | 0.07ms | **10배 빠름** |
 | RKNN | 0.79ms | FP32보다 약간 느림 |
 
-### End-to-End 성능 (test_wavs 기준, `bench_final.py`)
+### End-to-End 성능 (test_wavs 기준)
 
 | 모드 | Enc/청크 | Joi/프레임 | RTF | CER |
 |------|---------|------------|-----|-----|
-| **RKNN rmreshape C API** | **33ms** | **0.7ms** | **~0.12** | **26.25%** |
+| **RKNN nocache-static** | **27.5ms** | **0.7ms** | **~0.10** | **22.97%** |
+| RKNN rmreshape C API | 33ms | 0.7ms | ~0.12 | 26.25% |
 | ONNX INT8 | 35ms | 0.13ms | 0.130 | 19.95% |
 | ONNX FP32 | 46ms | 0.63ms | 0.182 | 19.95% |
-| RKNN INT8 cumfix (set_io_mem) | 39.2ms | 0.7ms | ~0.15 | 25.00% |
-| RKNN INT8 cumfix (rknnlite) | 52.7ms | 0.7ms | 0.175 | 25.00% |
-| RKNN Hybrid | 65+40ms | 0.79ms | 0.349 | 19.95% |
-
-**속도: RKNN rmreshape > ONNX INT8 (33ms < 35ms)**
-**정확도: ONNX INT8 > RKNN (19.95% < 26.25%)**
 
 ---
 
@@ -92,26 +148,6 @@
 | 2.wav | 부모가 저지르는 큰 실수 중 하나는 자기 아이를 다른 집 아이와 비교하는 것이다. | 부모가 저질에는 큰 실수 중 하나는 자기 아이를 다른 집 아이와 비교하는 것이다 | 15.6% |
 | 3.wav | 주민등록증을 보여 주시겠어요? | 주민등록증을 보여 주시겠어요? | 0.0% |
 | **평균** | | | **19.95%** |
-
-### CER 비교 (모드별)
-
-| 모드 | 0.wav | 1.wav | 2.wav | 3.wav | 평균 |
-|------|-------|-------|-------|-------|------|
-| ONNX INT8 | 37.5% | 26.7% | 15.6% | 0.0% | **19.95%** |
-| RKNN INT8 CumSum 패치 | 56.2% | 20.0% | 15.6% | 0.0% | **22.97%** |
-| RKNN FP16 CumSum 패치 | 37.5% | 26.7% | 53.1% | 0.0% | **29.32%** |
-| RKNN Pure (CumSum 버그) | - | - | - | - | **91.89%** |
-
-**CumSum 패치 효과:** 91.89% → 22.97% (INT8 기준, ONNX INT8 대비 +3pp)
-
-**CER 개선 이력:**
-- 초기 구현 (preemphasis 없음): 26.2%
-- preemphasis=0.97 추가, frame mean 제거: **19.95% (-6.3pp)**
-
-**남은 CER 원인:**
-1. 0.wav, 1.wav의 오인식은 기본 ONNX 모델 자체의 한계 (sherpa-onnx 기준 모델)
-2. kaldifeat 미사용 (numpy 자체 구현) - 추가 격차 가능
-3. 4개 파일 샘플로 일반화 주의 필요
 
 ---
 
@@ -127,112 +163,28 @@ Chunk 2: cached_conv2_4 diff=159.85, encoder_out diff=3.52 (파국)
 ```
 
 **근본 원인:** RKNN의 CumSum 연산이 non-zero 초기 상태에서 잘못 계산됨
-- `new_cached_avg` 계산 그래프: `CumSum → Add(누적합 + prev_avg*prev_len) → Mul(1/new_len) → Gather(마지막)`
-- chunk 0: 모든 캐시 = 0 → 정확 (CumSum(0)=0)
-- chunk 1+: prev_avg ≠ 0 → RKNN CumSum 오차 발생
 
-**해결책 1: 하이브리드 추론**
-- RKNN: encoder_out 계산 (정확)
-- ONNX: 캐시 업데이트 (정확)
-- 결과: CER 동일, RTF 0.349 (ONNX만보다 느림)
-
-**해결책 2: CumSum → MatMul 패치 (2026-03-13)**
+**해결책: CumSum → MatMul 패치 (2026-03-13)**
 - `fix_cumsum.py`: 15개 CumSum 노드를 하삼각 행렬 MatMul로 교체
-- `encoder-epoch-99-avg-1-cumfix.onnx` → `encoder-epoch-99-avg-1-cumfix.rknn` 변환
-- 결과: CER 29.32% (ONNX 19.95% 대비 +9.4pp, FP16 노이즈 영향)
-- ONNX 대비 max_diff: 0.0 (수학적으로 동일), NPU 실측 max_diff: 0.013
+- 결과: CER 91.89% → 22.97% (INT8 기준)
 
 ### 문제 2: RKNN이 ONNX보다 느림 → 해결됨
 
-**원인:** 36개 입력 텐서 (총 2MB) 전송 오버헤드 + NPU 내부 Reshape/Transpose dispatch 오버헤드
+**원인:** 36개 입력 텐서 전송 오버헤드 + NPU 내부 Reshape/Transpose dispatch 오버헤드
 
 **해결 과정:**
 1. C API `set_io_mem` + CACHEABLE 메모리: 52.7ms → 39.2ms
 2. `remove_reshape=True`로 변환: rknn_run 39.2ms → 30.7ms
-3. cache 변환 (reshape+transpose): +~3ms
-4. **최종: 33ms/chunk — ONNX 35ms보다 빠름**
-
-**perf_detail 분석으로 발견한 핵심 병목:**
-- Reshape 181ops (8.2ms, 17%) + Transpose 202ops (6.7ms, 14%) = 14.9ms (31%)
-- `remove_reshape=True`로 경계 Reshape 제거 → 8.5ms 절감
-
-### 문제 3: RKNN 변환 오류들
-
-| 오류 | 해결 |
-|------|------|
-| `input shape ['N', 2] not support` | `load_onnx(inputs=input_names, input_size_list=...)` 추가 |
-| `len of mean_values ([0]) wrong` | config에서 `mean_values`/`std_values` 완전 제거 |
-| `core_mask not support in simulator` | rknn.api → rknnlite.api 로 변경 |
-| `input shape (2,1,384,30) wrong, expect nhwc` | 4D 텐서 NCHW→NHWC 변환 (`np.transpose(a,(0,2,3,1))`) |
-| INT8 캘리브레이션 format 오류 | .npy 파일로 저장 + dataset.txt 방식 사용 |
-| INT8 캘리브레이션 NHWC 오류 | 캘리브레이션 데이터는 NCHW 그대로 저장 |
-
-### 문제 4: fbank 구현 오차
-
-**증상:** ONNX CER 26.2% (예상 5-10%)
-
-**원인:** kaldifeat와의 차이
-- preemphasis 누락 (kaldifeat 기본값 0.97)
-- frame mean 제거 불필요
-
-**해결:** preemphasis=0.97 추가, frame mean 제거 → CER 19.95%
-
-**fbank 성능 최적화:**
-- 기존 (프레임별 루프 FFT): ~50ms/파일
-- 벡터화 FFT (stride_tricks): ~10ms/파일 (5x 빠름)
-
----
-
-## 파일 구성
-
-```
-rk3588/
-├── fbank.py                    # Kaldi-호환 80-bin fbank (numpy 벡터화, preemphasis=0.97)
-├── convert_encoder.py          # Encoder ONNX → RKNN FP16 변환
-├── convert_encoder_int8.py     # Encoder ONNX → RKNN INT8 변환 (ONNX 캘리브레이션)
-├── convert_decoder_joiner.py   # Decoder/Joiner ONNX → RKNN 변환
-├── inference_onnx.py           # ONNX 추론 (INT8 기본, 4-thread) ← 권장
-├── inference_hybrid.py         # RKNN Hybrid 추론 (RKNN encoder_out + ONNX 캐시)
-├── inference_rknn.py           # RKNN Pure 추론 (cumfix.rknn 사용 시 CER 29.32%)
-├── fix_cumsum.py               # CumSum → MatMul 패치 스크립트
-├── convert_encoder_cumfix.py   # cumfix ONNX → RKNN FP16 변환
-├── eval_cer.py                 # CER 종합 평가 (ONNX FP32/INT8 + Hybrid + Pure)
-├── bench_final.py              # 최종 성능 벤치마크
-├── debug_cache2.py             # 캐시 발산 분석 도구
-├── debug_per_chunk.py          # 청크별 ONNX vs RKNN 비교
-├── bench_hybrid_timing.py      # Hybrid 레이턴시 분석
-├── bench_rknn_reuse.py         # RKNN 입력 재사용 테스트
-└── encoder-epoch-99-avg-1.rknn         # RKNN FP16 (148MB)
-└── encoder-epoch-99-avg-1-int8.rknn    # RKNN INT8 (80MB)
-└── decoder-epoch-99-avg-1.rknn
-└── joiner-epoch-99-avg-1.rknn
-```
-
----
-
-## 권장 추론 방법
-
-**속도 우선: RKNN rmreshape + C API (33ms/chunk)**
-```python
-from encoder_capi import EncoderCAPI
-enc = EncoderCAPI('rk3588/encoder-epoch-99-avg-1-int8-cumfix-rmreshape.rknn')
-cache = enc.init_cache()
-enc_out, cache = enc.run(x_nhwc, cache)  # 33ms
-```
-
-**정확도 우선: ONNX INT8 (35ms/chunk, CER 19.95%)**
-```python
-from inference_onnx import ZipformerONNX
-model = ZipformerONNX(use_int8=True)
-stats = model.transcribe('/path/to/audio.wav')
-```
+3. nocache 변환 (cache 제거): 30.7ms → 28.5ms
+4. **최종: 27.5ms/chunk — ONNX 35ms보다 22% 빠름**
 
 ---
 
 ## 향후 과제
 
-1. **CER 개선**: RKNN INT8 양자화 정확도 개선 (26.25% → 목표 <22%)
-   - `quantized_algorithm='mmse'` (메모리 부족으로 미완료)
-   - hybrid quantization (민감 레이어만 FP16)
-2. **kaldifeat 설치**: 더 정확한 fbank → CER 추가 개선
-3. **대용량 평가**: 4개 test_wavs 외 KsponSpeech 전체로 CER 측정
+1. **Fine-tuning으로 20ms 달성**: 8-layer(1,2,2,1,2) 모델 fine-tune → CER 확인
+   - 아키텍처 확인 완료, 학습 파이프라인(icefall) 설정 필요
+   - Export 도구: `/tmp/zipformer_export/export_pruned.py`
+2. **CER 개선**: RKNN INT8 양자화 정확도 개선 (22.97% → 목표 <20%)
+3. **kaldifeat 설치**: 더 정확한 fbank → CER 추가 개선
+4. **대용량 평가**: KsponSpeech 전체로 CER 측정

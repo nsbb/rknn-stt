@@ -64,22 +64,33 @@ PyTorch 체크포인트에서 encoder 내부 레이어를 줄여 re-export → R
 
 ## 파일 안내
 
-### 핵심 코드
+### 루트 — 핵심 코드
 
 | 파일 | 설명 |
 |------|------|
 | `inference_rknn.py` | RKNN NPU 추론 (C API set_io_mem) |
 | `inference_onnx.py` | ONNX CPU 추론 (INT8/FP32) |
+| `encoder_capi.py` | RKNN C API wrapper |
 | `fix_cumsum.py` | CumSum → MatMul 패치 |
-| `build_nocache_static.py` | RKNN INT8 변환 스크립트 |
 | `fbank.py` | 80-dim log-mel feature extraction |
 
-### 벤치마크
+### `build/` — RKNN 변환 스크립트 (22개)
 
-| 파일 | 설명 |
-|------|------|
-| `bench_nocache.py` | nocache 모델 속도 측정 |
-| `bench_multicore.py` | 멀티코어 NPU 비교 |
+ONNX → RKNN 변환, 양자화, 다양한 옵션 조합 빌드.
+주요: `build_nocache_static.py`, `convert_encoder_int8_cumfix.py`
+
+### `bench/` — 벤치마크 (16개)
+
+NPU 속도 측정, 멀티코어 비교, 변환 옵션별 비교.
+주요: `bench_nocache.py`, `bench_multicore.py`
+
+### `onnx_surgery/` — ONNX 그래프 수정 실험 (15개)
+
+Reshape/Transpose 제거, 레이어 분리, 캐시 최적화 등 시도.
+
+### `experiments/` — 디버그/테스트/일회성 실험 (29개)
+
+캐시 발산 디버그, C API 테스트, 성능 프로파일링 등.
 
 ### 문서
 
@@ -98,7 +109,7 @@ python inference_onnx.py
 python fix_cumsum.py
 
 # 3. RKNN 변환
-conda run -n RKNN-Toolkit2 python build_nocache_static.py
+conda run -n RKNN-Toolkit2 python build/build_nocache_static.py
 
 # 4. RKNN 추론 (NPU)
 python inference_rknn.py

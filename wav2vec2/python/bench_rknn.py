@@ -76,7 +76,7 @@ def load_audio(path, max_len=80000):
     return audio[np.newaxis]
 
 
-def bench_model(path, label, audio_data=None, n_runs=20, warmup=5):
+def bench_model(path, label, audio_data=None, n_runs=20, warmup=5, core_mask=1):
     if not os.path.exists(path):
         print(f'{label:45s} NOT FOUND')
         return None
@@ -91,7 +91,7 @@ def bench_model(path, label, audio_data=None, n_runs=20, warmup=5):
         print(f'{label:45s} INIT FAILED: {ret}')
         return None
 
-    lib.rknn_set_core_mask(ctx, 1)  # core0 only
+    lib.rknn_set_core_mask(ctx, core_mask)
 
     io = IONum()
     lib.rknn_query(ctx, 0, byref(io), ctypes.sizeof(io))
@@ -196,19 +196,25 @@ def decode_output(output, vocab_path):
 
 
 if __name__ == '__main__':
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--core_mask', type=int, default=1,
+                        help='NPU core mask: 1=core0, 3=core0+1, 7=all3')
+    args = parser.parse_args()
+
     audio = load_audio(f'{BASE}/input/call_elevator.wav')
-    print(f"Audio shape: {audio.shape}\n")
-    print("=== wav2vec2 RKNN Benchmark (C API set_io_mem, core0) ===\n")
-
-    models = [
-        (f'{BASE}/model/wav2vec-xls-r-300m_5s_fp16.rknn', 'FP16'),
-        (f'{BASE}/model/wav2vec-xls-r-300m_5s_int8.rknn', 'INT8 (original)'),
-        (f'{BASE}/model/wav2vec-xls-r-300m_5s_int8_v2.rknn', 'INT8 v2 (recalib)'),
-    ]
-
     vocab_path = f'{BASE}/json/vocab.json'
-    for path, label in models:
-        out = bench_model(path, label, audio)
+    print(f"Audio shape: {audio.shape}\n")
+
+    model_path = f'{BASE}/model/wav2vec-xls-r-300m_5s_fp16.rknn'
+    core_configs = [
+        (1, 'core0'),
+        (3, 'core0+1'),
+        (7, 'core0+1+2'),
+    ]
+    print("=== wav2vec2 FP16 Multi-core Benchmark ===\n")
+    for mask, label in core_configs:
+        out = bench_model(model_path, f'FP16 {label}', audio, core_mask=mask)
         if out is not None:
             text = decode_output(out, vocab_path)
             print(f'{"":45s} → [{text}]\n')

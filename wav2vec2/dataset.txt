@@ -1,0 +1,4 @@
+/home/rk3588/travail/rk3588/wav2vec2_kor/calibration_data/turn_on_light.npy
+/home/rk3588/travail/rk3588/wav2vec2_kor/calibration_data/check_weather.npy
+/home/rk3588/travail/rk3588/wav2vec2_kor/calibration_data/call_elevator.npy
+/home/rk3588/travail/rk3588/wav2vec2_kor/calibration_data/sample.npy

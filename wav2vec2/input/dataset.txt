@@ -1,0 +1,5 @@
+../input/sample.wav
+../input/call_elevator.wav
+../input/check_weather.wav
+../input/turn_on_light.wav
+

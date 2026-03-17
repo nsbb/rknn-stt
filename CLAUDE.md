@@ -15,7 +15,8 @@ rknn-stt/
 ├── zipformer/              # Streaming Transducer — 1차 완료, RKNN 성능 개선 필요
 │   ├── rk3588/             # 변환/추론/벤치 코드
 │   └── rk3676/             # 미래
-└── wav2vec2/               # Split INT8-KL, CER 11.50%
+├── wav2vec2/               # Split INT8-KL, CER 11.50%
+└── ko_citrinet/            # 한국어 CitriNet CTC — FP16 포팅 완료
 ```
 
 ## 현재 상태
@@ -57,6 +58,13 @@ rknn-stt/
 | `rk3588/fix_cumsum.py` | CumSum → MatMul 패치 |
 | `rk3588/inference_onnx.py` | ONNX INT8 추론 |
 | `rk3588/inference_rknn.py` | RKNN Pure 추론 (rknnlite) |
+
+### ko_citrinet — RKNN FP16 포팅 완료 (2026-03-17)
+
+- **52.5ms/3초 오디오** (RTF 0.0175, 57배 실시간)
+- ONNX↔RKNN cosine 0.999935, 4개 테스트 결과 100% 일치
+- RKNN 버그 4개 수정: LogSoftmax 제거, 마스크 SE→ReduceMean, ReduceMean→depthwise Conv, **Squeeze 제거**
+- 상세: `ko_citrinet/README.md`
 
 ## Claude 행동 규칙
 

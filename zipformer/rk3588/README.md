@@ -6,11 +6,13 @@
 
 | 모드 | Encoder/chunk | RTF | CER | 비고 |
 |------|:---:|:---:|:---:|------|
-| **RKNN NPU** | **27.5ms** | **0.10** | **22.97%** | nocache-static, core0 |
+| **RKNN NPU (속도)** | **27.5ms** | **0.10** | **22.97%** | nocache-static, core0 |
+| **RKNN NPU (정확도)** | **53ms** | **0.20** | **21.51%** | KL divergence 양자화 |
 | ONNX INT8 CPU | 35ms | 0.13 | 19.95% | 4-thread |
 | ONNX FP32 CPU | 46ms | 0.18 | 19.95% | 4-thread |
 
 > RKNN이 ONNX CPU 대비 **22% 빠름** (27.5ms vs 35ms)
+> KL divergence 양자화로 CER 22.97% → 21.51% (-1.46pp) 개선
 
 ## 속도 최적화 과정
 

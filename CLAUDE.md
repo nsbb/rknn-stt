@@ -15,17 +15,20 @@ rknn-stt/
 ├── zipformer/              # Streaming Transducer — 1차 완료, RKNN 성능 개선 필요
 │   ├── rk3588/             # 변환/추론/벤치 코드
 │   └── rk3676/             # 미래
-└── wav2vec2/               # 미착수
+└── wav2vec2/               # Split INT8-KL, CER 11.50%
 ```
 
 ## 현재 상태
 
-### zipformer — RKNN 최적화 완료 (2026-03-14)
+### zipformer — RKNN 최적화 완료 (2026-03-17)
+
+**RKNN KL divergence (정확도 최적):**
+- CER: **21.85%** (KL divergence 100-sample 캘리브레이션, normal 22.97% 대비 -1.12pp)
+- 모델: `encoder-epoch-99-avg-1-int8-cumfix-kl-100s.rknn`
 
 **RKNN rmreshape + C API (속도 최적):**
 - Encoder: **33ms/chunk** (ONNX 35ms보다 빠름!)
 - CER: 26.25%, 모델: `encoder-epoch-99-avg-1-int8-cumfix-rmreshape.rknn`
-- 추론: `rk3588/encoder_capi.py` (C API set_io_mem wrapper)
 
 **ONNX INT8 (정확도 최적):**
 - CER: 19.95%, RTF: 0.130 (ONNX INT8 4-thread)
@@ -54,6 +57,16 @@ rknn-stt/
 | `rk3588/fix_cumsum.py` | CumSum → MatMul 패치 |
 | `rk3588/inference_onnx.py` | ONNX INT8 추론 |
 | `rk3588/inference_rknn.py` | RKNN Pure 추론 (rknnlite) |
+
+## Claude 행동 규칙
+
+### 사실 확인 없이 답변 금지
+
+파일명, 모델 이름, 설정값, 수치, 경로 등 구체적 사실에 대해서는 반드시 파일을 읽거나 검색해서 확인한 후 답변할 것. 추측으로 답변 금지. 존재하지 않는 파일명을 지어내지 말 것.
+
+### 커밋에 Co-Authored-By 넣지 말 것
+
+git commit 메시지에 `Co-Authored-By: Claude` 줄을 절대 넣지 말 것.
 
 ## 공통 환경
 

@@ -10,6 +10,7 @@
 *.mp3
 *.npz
 *.csv
+!**/infer_results_*/*.csv
 calibration_data/
 eval_result/
 

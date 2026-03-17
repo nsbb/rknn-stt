@@ -22,5 +22,5 @@ __pycache__/
 # OS
 .DS_Store
 
-# Claude Code
+# IDE / tool config
 .claude/

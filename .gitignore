@@ -11,6 +11,7 @@
 *.npz
 *.csv
 !**/infer_results_*/*.csv
+!eval_results/**/*.csv
 calibration_data/
 eval_result/
 

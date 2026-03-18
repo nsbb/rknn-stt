@@ -11,30 +11,47 @@
 
 | 항목 | 내용 |
 |------|------|
-| 원본 모델 | facebook/wav2vec2-xls-r-300m (Large, **300M params**) |
-| fine-tune | 한국어 CTC head |
-| 양자화 방법 | **Split INT8**: Encoder Layer 0-11은 INT8 (KL divergence), Layer 12-23은 FP16 |
+| 원본 모델 | facebook/wav2vec2-xls-r-300m (Large, **300M params**) + 한국어 CTC head |
+| 양자화 방법 | **Split INT8** — Encoder 24개 레이어 중 전반부만 INT8, 후반부는 FP16 |
 | 최대 입력 | 5초 (80,000 samples @ 16kHz) |
 | 정규화 | amplitude peak → 5.0 (INT8 정확도 핵심) |
 
+#### Split INT8이란?
+
+전체 Encoder를 INT8로 양자화하면 LayerNorm/Softmax/GELU가 깨져서 출력이 garbage가 된다.
+이를 해결하기 위해 **Encoder를 두 파트로 분할**:
+
+- **Layer 0-11** → INT8-KL 양자화 (KL divergence, 100-sample 캘리브레이션) → **속도 이득**
+- **Layer 12-23** → FP16 유지 (상위 레이어는 의미 표현을 다루므로 정밀도 필수) → **정확도 보존**
+
+| 양자화 방식 | INT8 범위 | CER | 비고 |
+|------------|----------|-----|------|
+| 전체 FP16 | 없음 | 35.96% | baseline |
+| 전체 INT8 | Layer 0-23 | garbage | 출력 깨짐 |
+| **Split 11 (채택)** | **Layer 0-11** | **35.25%** | **FP16보다 오히려 좋음** |
+| Split 15 | Layer 0-15 | 37.06% | 약간 나빠짐, 더 빠름 |
+| Split 17 | Layer 0-17 | 37.57% | 더 나빠짐, 가장 빠름 |
+
 **RKNN 모델 파일 (4개, 순서대로 실행):**
 
-| 파일명 | 크기 | 역할 |
-|--------|------|------|
-| `wav2vec2_part1_features_fp16.rknn` | 13MB | CNN 특징 추출기 (FP16) |
-| `wav2vec2_part2a_int8_kl.rknn` | 160MB | Encoder Layer 0-11 (INT8-KL) |
-| `wav2vec2_part2b_fp16.rknn` | 295MB | Encoder Layer 12-23 (FP16) |
-| `wav2vec2_part3_lmhead_fp16.rknn` | 5.2MB | CTC Head (FP16) |
-| **합계** | **462MB** | |
+| 순서 | 파일명 | 크기 | 데이터타입 | 역할 |
+|:----:|--------|------|:----------:|------|
+| 1 | `wav2vec2_part1_features_fp16.rknn` | 13MB | FP16 | CNN 특징 추출기 |
+| 2 | `wav2vec2_part2a_int8_kl.rknn` | 160MB | **INT8** | Encoder Layer 0-11 (핵심 연산) |
+| 3 | `wav2vec2_part2b_fp16.rknn` | 295MB | FP16 | Encoder Layer 12-23 |
+| 4 | `wav2vec2_part3_lmhead_fp16.rknn` | 5.2MB | FP16 | CTC Head |
+| | **합계** | **462MB** | | |
 
 **양자화 파이프라인:**
 ```
-wav2vec2-xls-r-300m (PyTorch)
-  → ONNX export (5초 고정 입력)
-  → Split: Layer 0-11 / Layer 12-23
-  → Part2A: INT8 양자화 (KL divergence, 100-sample 캘리브레이션)
-  → Part1, Part2B, Part3: FP16
-  → 4개 RKNN 파일
+wav2vec2-xls-r-300m (PyTorch, 한국어 fine-tuned)
+  ├─ ONNX export (5초 고정 입력)
+  ├─ ONNX Split: Encoder Layer 0-11 / Layer 12-23 분리
+  │
+  ├─ Part1 (CNN)         → FP16  → wav2vec2_part1_features_fp16.rknn
+  ├─ Part2A (Enc L0-11)  → INT8-KL (100-sample cal) → wav2vec2_part2a_int8_kl.rknn
+  ├─ Part2B (Enc L12-23) → FP16  → wav2vec2_part2b_fp16.rknn
+  └─ Part3 (LM Head)     → FP16  → wav2vec2_part3_lmhead_fp16.rknn
 ```
 
 ### 2. citrinet — FP16

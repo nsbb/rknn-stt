@@ -133,6 +133,32 @@ conda run -n RKNN-Toolkit2 python python/inference_rknn.py --bench
 
 ---
 
+## 로컬 테스트셋 평가 (368 샘플, 실환경)
+
+| 테스트셋 | 샘플수 | CER | Avg ms | 설명 |
+|----------|:------:|:---:|:------:|------|
+| 7F_KSK | 108 | 27.5% | 64 | 월패드, 화자 KSK |
+| 7F_HJY | 107 | 54.9% | 64 | 월패드, 화자 HJY |
+| modelhouse_2m | 51 | 37.5% | 63 | 모델하우스, 2m 거리 |
+| modelhouse_2m_noheater | 51 | 25.6% | 60 | 모델하우스, 2m, 난방 소음 없음 |
+| modelhouse_3m | 51 | 51.4% | 61 | 모델하우스, 3m 거리 |
+| **전체** | **368** | **39.9%** | **63** | RTF 0.021 (48배 실시간) |
+
+### wav2vec2와 비교
+
+| | wav2vec2 Split INT8-KL | CitriNet FP16 |
+|--|:---:|:---:|
+| **CER** | **9.0%** | 39.9% |
+| 지연 | 437ms | **63ms** |
+| RTF | 0.087 (11.5배) | **0.021 (48배)** |
+| 모델 크기 | 462MB | **281MB** |
+| 최대 입력 | 5초 | 3초 |
+
+> 정확도는 wav2vec2가 압도적. 속도는 citrinet이 7배 빠름.
+> 상세: [`../eval_results/citrinet/README.md`](../eval_results/citrinet/README.md)
+
+---
+
 ## 파일 구조
 
 ```

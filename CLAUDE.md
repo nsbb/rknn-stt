@@ -12,58 +12,49 @@ RK 시리즈 NPU에서 한국어 STT 모델을 실행하기 위한 포팅 작업
 
 ```
 rknn-stt/
-├── zipformer/              # Streaming Transducer — 1차 완료, RKNN 성능 개선 필요
+├── zipformer/              # Streaming Transducer — 완료
 │   ├── rk3588/             # 변환/추론/벤치 코드
 │   └── rk3676/             # 미래
-├── wav2vec2/               # Split INT8-KL, CER 11.50%
-└── ko_citrinet/            # 한국어 CitriNet CTC — FP16 포팅 완료
+├── wav2vec2/               # Split INT8-KL — 완료 (최고 정확도)
+├── ko_citrinet/            # CitriNet FP16 — 완료 (최고 속도)
+├── eval_results/           # 로컬 테스트셋 평가 결과
+├── eval_local_testsets.py  # 평가 스크립트
+├── EVALUATION.md           # 3개 모델 비교 문서
+└── testset/                # 로컬 테스트셋 (gitignore)
 ```
 
-## 현재 상태
+## 현재 상태 — 3개 모델 완료 (2026-03-19)
 
-### zipformer — RKNN 최적화 완료 (2026-03-17)
+### 로컬 테스트셋 평가 (368샘플: 7F_KSK, 7F_HJY, modelhouse 2m/3m)
 
-**RKNN KL divergence (정확도 최적):**
-- CER: **21.85%** (KL divergence 100-sample 캘리브레이션, normal 22.97% 대비 -1.12pp)
-- 모델: `encoder-epoch-99-avg-1-int8-cumfix-kl-100s.rknn`
+| 모델 | CER | 지연 | RTF | 모델 크기 | 최대 입력 |
+|------|:---:|:---:|:---:|:---:|:---:|
+| **wav2vec2 Split INT8-KL** | **9.0%** | 437ms | 0.087 | 462MB | 5초 |
+| zipformer INT8 nocache | 22.97% | 27.5ms | 0.10 | 83MB | 스트리밍 |
+| citrinet FP16 | 39.9% | **63ms** | **0.021** | 281MB | 3초 |
 
-**RKNN rmreshape + C API (속도 최적):**
-- Encoder: **33ms/chunk** (ONNX 35ms보다 빠름!)
-- CER: 26.25%, 모델: `encoder-epoch-99-avg-1-int8-cumfix-rmreshape.rknn`
+> 파이프라인에는 **wav2vec2** 채택 (정확도 최고).
 
-**ONNX INT8 (정확도 최적):**
-- CER: 19.95%, RTF: 0.130 (ONNX INT8 4-thread)
-- 추론: `rk3588/inference_onnx.py` (use_int8=True)
+### wav2vec2 — Split INT8-KL (2026-03-15)
 
-### 최적화 이력
+- **CER 9.0%** (368 로컬 샘플), 11.78% (702 스마트홈 셋)
+- 437ms/5초, RTF 0.087 (11.5배 실시간)
+- Split INT8: Encoder Layer 0-11 INT8-KL + Layer 12-23 FP16
+- amplitude normalization target=5.0 필수
+- 상세: `wav2vec2/README.md`
 
-| 시도 | Encoder/chunk | 비고 |
-|------|--------------|------|
-| rknnlite inputs_set | 52.7ms | baseline |
-| C API set_io_mem + CACHEABLE | 39.2ms | -13.5ms |
-| **remove_reshape=True** | **30.7ms (rknn_run)** | **-8.5ms** |
-| + cache 변환 오버헤드 | **33ms (총합)** | **ONNX 35ms < 이김!** |
+### zipformer — Streaming Transducer (2026-03-17)
 
-**핵심 기법:** `rknn.config(remove_reshape=True)` + C API `set_io_mem`
-- 경계 Reshape 제거 → NPU dispatch 오버헤드 -8.5ms
-- cache NCHW→NHWC: `out.reshape(N,C,H,W).transpose(0,2,3,1)` (~3ms)
+- **CER 21.51%** (KL-100s), 22.97% (standard INT8)
+- **27.5ms/chunk** (320ms 음성, RTF 0.10, 10배 실시간)
+- CumSum 버그 → MatMul 패치로 해결 (CER 91.89% → 22.97%)
+- 상세: `zipformer/README.md`, `zipformer/rk3588/RESULTS.md`
 
-### 관련 파일
+### ko_citrinet — CitriNet FP16 (2026-03-17)
 
-| 파일 | 내용 |
-|------|------|
-| `rk3588/RESULTS.md` | 전체 성능 결과 |
-| `rk3588/encoder_capi.py` | C API encoder wrapper (rmreshape용) |
-| `rk3588/convert_encoder_int8_optarget.py` | rmreshape 변환 스크립트 |
-| `rk3588/fix_cumsum.py` | CumSum → MatMul 패치 |
-| `rk3588/inference_onnx.py` | ONNX INT8 추론 |
-| `rk3588/inference_rknn.py` | RKNN Pure 추론 (rknnlite) |
-
-### ko_citrinet — RKNN FP16 포팅 완료 (2026-03-17)
-
-- **52.5ms/3초 오디오** (RTF 0.0175, 57배 실시간)
-- ONNX↔RKNN cosine 0.999935, 4개 테스트 결과 100% 일치
-- RKNN 버그 4개 수정: LogSoftmax 제거, 마스크 SE→ReduceMean, ReduceMean→depthwise Conv, **Squeeze 제거**
+- **63ms/3초** (RTF 0.021, 48배 실시간)
+- ONNX↔RKNN cosine 0.999935
+- RKNN 버그 4개 수정: LogSoftmax, SE→ReduceMean, ReduceMean→Conv, Squeeze 제거
 - 상세: `ko_citrinet/README.md`
 
 ## Claude 행동 규칙
